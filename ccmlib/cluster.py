@@ -46,7 +46,16 @@ DEFAULT_CLUSTER_WAIT_TIMEOUT_IN_SECS = int(os.environ.get('CCM_CLUSTER_START_DEF
 
 class Cluster(object):
 
-    def __init__(self, path, name, partitioner=None, install_dir=None, create_directory=True, version=None, verbose=False, derived_cassandra_version=None, configuration_yaml=None, **kwargs):
+    @staticmethod
+    def getConfDir(install_dir):
+        return os.path.join(install_dir, common.CASSANDRA_CONF_DIR)
+
+    @staticmethod
+    def getNodeClass():
+        return Node
+
+
+    def __init__(self, path, name, partitioner=None, install_dir=None, create_directory=True, version=None, verbose=False, derived_cassandra_version=None, options=None, **kwargs):
         self.name = name
         self.nodes = {}
         self.seeds = []
@@ -59,7 +68,7 @@ class Cluster(object):
         self.__path = path
         self.__version = None
         self.use_vnodes = False
-        self.configuration_yaml = configuration_yaml
+        self.configuration_yaml = options.configuration_yaml if options else None
         # Classes that are to follow the respective logging level
         self._debug = []
         self._trace = []
@@ -767,7 +776,7 @@ class Cluster(object):
             node.update_logback(new_logback_config)
 
     def __get_version_from_build(self):
-        return common.get_version_from_build(self.get_install_dir())
+        return self.getNodeClass().get_version_from_build(self.get_install_dir())
 
     def _update_config(self):
         node_list = [node.name for node in list(self.nodes.values())]

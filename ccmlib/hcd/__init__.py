@@ -14,5 +14,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# load __init__.py from cluster type plugin implementation packages
-from ccmlib import dse, hcd
+
+from ccmlib import extension
+from ccmlib.cmds.cluster_cmds import ClusterCreateCmd
+from ccmlib.hcd.hcd_cluster import isHcdClusterType
+
+
+# static initialisation:  register the extension cluster type, add hcd specific option to ClusterCreateCmd
+
+extension.CLUSTER_TYPES.append(isHcdClusterType)
+
+ClusterCreateCmd.options_list.extend([
+    (["--hcd"], {'action': "store_true", 'dest': "hcd", 'help': "Use with -v or --install-dir to indicate that the version being loaded is HCD"})])

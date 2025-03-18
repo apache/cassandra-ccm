@@ -25,14 +25,11 @@ import sys
 
 from six import print_
 
-from ccmlib import common, repository
-from ccmlib.cluster import Cluster
+from ccmlib import common, extension, repository
 from ccmlib.cluster_factory import ClusterFactory
 from ccmlib.cmds.command import Cmd
 from ccmlib.common import ArgumentError, get_default_signals
-from ccmlib.dse_cluster import DseCluster
-from ccmlib.dse_node import DseNode
-from ccmlib.node import Node, NodeError
+from ccmlib.node import NodeError
 
 CLUSTER_CMDS = [
     "create",
@@ -87,11 +84,6 @@ class ClusterCreateCmd(Cmd):
         (['--no-switch'], {'action': "store_true", 'dest': "no_switch", 'help': "Don't switch to the newly created cluster", 'default': False}),
         (['-p', '--partitioner'], {'type': "string", 'dest': "partitioner", 'help': "Set the cluster partitioner class"}),
         (['-v', "--version"], {'type': "string", 'dest': "version", 'help': "Download and use provided cassandra or dse version. If version is of the form 'git:<branch name>', then the specified cassandra branch will be downloaded from the git repo and compiled. (takes precedence over --install-dir)", 'default': None}),
-        (['-o', "--opsc"], {'type': "string", 'dest': "opscenter", 'help': "Download and use provided opscenter version to install with DSE. Will have no effect on cassandra installs)", 'default': None}),
-        (["--dse"], {'action': "store_true", 'dest': "dse", 'help': "Use with -v to indicate that the version being loaded is DSE"}),
-        (["--dse-username"], {'type': "string", 'dest': "dse_username", 'help': "The username to use to download DSE with", 'default': None}),
-        (["--dse-password"], {'type': "string", 'dest': "dse_password", 'help': "The password to use to download DSE with", 'default': None}),
-        (["--dse-credentials"], {'type': "string", 'dest': "dse_credentials_file", 'help': "An ini-style config file containing the dse_username and dse_password under a dse_credentials section. [default to {}/.dse.ini if it exists]".format(common.get_default_path_display_name()), 'default': None}),
         (["--install-dir"], {'type': "string", 'dest': "install_dir", 'help': "Path to the cassandra or dse directory to use [default %default]", 'default': "./"}),
         (['-n', '--nodes'], {'type': "string", 'dest': "nodes", 'help': "Populate the new cluster with that number of nodes (a single int or a colon-separate list of ints for multi-dc setups)"}),
         (['-i', '--ipprefix'], {'type': "string", 'dest': "ipprefix", 'help': "Ipprefix to use to create the ip of a node while populating"}),
@@ -120,6 +112,7 @@ class ClusterCreateCmd(Cmd):
     descr_text = "Create a new cluster"
     usage = "usage: ccm create [options] cluster_name"
 
+
     def validate(self, parser, options, args):
         Cmd.validate(self, parser, options, args, cluster_name=True)
         if options.ipprefix and options.ipformat:
@@ -137,10 +130,7 @@ class ClusterCreateCmd(Cmd):
                 parser.print_help()
                 parser.error("%s is not a valid cassandra directory. You must define a cassandra dir or version." % options.install_dir)
 
-            if common.get_dse_version(options.install_dir) is not None:
-                common.assert_jdk_valid_for_cassandra_version(common.get_dse_cassandra_version(options.install_dir))
-            else:
-                common.assert_jdk_valid_for_cassandra_version(common.get_version_from_build(options.install_dir))
+            common.assert_jdk_valid_for_cassandra_version(extension.get_cluster_class(options.install_dir).getNodeClass().get_version_from_build(options.install_dir))
 
         if common.is_win() and os.path.exists('c:\windows\system32\java.exe'):
             print_("""WARN: c:\windows\system32\java.exe exists.
@@ -149,10 +139,8 @@ class ClusterCreateCmd(Cmd):
 
     def run(self):
         try:
-            if self.options.dse or (not self.options.version and common.isDse(self.options.install_dir)):
-                cluster = DseCluster(self.path, self.name, install_dir=self.options.install_dir, version=self.options.version, dse_username=self.options.dse_username, dse_password=self.options.dse_password, dse_credentials_file=self.options.dse_credentials_file, opscenter=self.options.opscenter, verbose=self.options.verbose, configuration_yaml=self.options.configuration_yaml)
-            else:
-                cluster = Cluster(self.path, self.name, install_dir=self.options.install_dir, version=self.options.version, verbose=self.options.verbose, configuration_yaml=self.options.configuration_yaml)
+            cluster_class = extension.get_cluster_class(self.options.install_dir, self.options)
+            cluster = cluster_class(self.path, self.name, install_dir=self.options.install_dir, version=self.options.version, verbose=self.options.verbose, options=self.options)
         except OSError as e:
             import traceback
             print_('Cannot create cluster: %s\n%s' % (str(e), traceback.format_exc()), file=sys.stderr)
@@ -226,8 +214,7 @@ class ClusterAddCmd(Cmd):
         (['-j', '--jmx-port'], {'type': "string", 'dest': "jmx_port", 'help': "JMX port for the node", 'default': "7199"}),
         (['-r', '--remote-debug-port'], {'type': "string", 'dest': "remote_debug_port", 'help': "Remote Debugging Port for the node", 'default': "2000"}),
         (['-n', '--token'], {'type': "string", 'dest': "initial_token", 'help': "Initial token for the node", 'default': None}),
-        (['-d', '--data-center'], {'type': "string", 'dest': "data_center", 'help': "Datacenter name this node is part of", 'default': None}),
-        (['--dse'], {'action': "store_true", 'dest': "dse_node", 'help': "Add node to DSE Cluster", 'default': False}),
+        (['-d', '--data-center'], {'type': "string", 'dest': "data_center", 'help': "Datacenter name this node is part of", 'default': None})
     ]
     descr_text = "Add a new node to the current cluster"
     usage = "usage: ccm add [options] node_name"
@@ -272,10 +259,7 @@ class ClusterAddCmd(Cmd):
 
     def run(self):
         try:
-            if self.options.dse_node:
-                node = DseNode(self.name, self.cluster, self.options.bootstrap, self.thrift, self.storage, self.jmx_port, self.remote_debug_port, self.initial_token, binary_interface=self.binary)
-            else:
-                node = Node(self.name, self.cluster, self.options.bootstrap, self.thrift, self.storage, self.jmx_port, self.remote_debug_port, self.initial_token, binary_interface=self.binary)
+            node = self.cluster.getNodeClass(self.name, self.cluster, self.options.bootstrap, self.thrift, self.storage, self.jmx_port, self.remote_debug_port, self.initial_token, binary_interface=self.binary)
             self.cluster.add(node, self.options.is_seed, self.options.data_center)
         except common.ArgumentError as e:
             print_(str(e), file=sys.stderr)

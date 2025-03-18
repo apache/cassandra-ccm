@@ -23,8 +23,6 @@ import os
 import yaml
 
 from ccmlib import common, extension, repository
-from ccmlib.cluster import Cluster
-from ccmlib.dse_cluster import DseCluster
 from ccmlib.node import Node
 
 from distutils.version import LooseVersion  #pylint: disable=import-error, no-name-in-module
@@ -49,11 +47,8 @@ class ClusterFactory():
             cassandra_version = None
             if 'cassandra_version' in data:
                 cassandra_version = LooseVersion(data['cassandra_version'])
-
-            if common.isDse(install_dir):
-                cluster = DseCluster(path, data['name'], install_dir=install_dir, create_directory=False, derived_cassandra_version=cassandra_version)
-            else:
-                cluster = Cluster(path, data['name'], install_dir=install_dir, create_directory=False, derived_cassandra_version=cassandra_version)
+                cluster_class = extension.get_cluster_class(install_dir)
+                cluster = cluster_class(path, data['name'], install_dir=install_dir, create_directory=False, derived_cassandra_version=cassandra_version)
             node_list = data['nodes']
             seed_list = data['seeds']
             if 'partitioner' in data:

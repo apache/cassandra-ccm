@@ -22,28 +22,27 @@
 from __future__ import absolute_import
 
 import copy
-import fnmatch
 import logging
 import os
 import platform
 import re
 import shutil
 import signal
+import six
 import socket
 import stat
 import subprocess
 import sys
 import time
-from distutils.version import LooseVersion  #pylint: disable=import-error, no-name-in-module
-
-import six
 import yaml
+from distutils.version import LooseVersion  #pylint: disable=import-error, no-name-in-module
 from six import print_
+
+from ccmlib import extension
+
 
 BIN_DIR = "bin"
 CASSANDRA_CONF_DIR = "conf"
-DSE_CASSANDRA_CONF_DIR = "resources/cassandra/conf"
-OPSCENTER_CONF_DIR = "conf"
 
 CASSANDRA_CONF = "cassandra.yaml"
 JVM_OPTS_PATTERN = "jvm*.options"
@@ -394,7 +393,8 @@ def rmdirs(path):
 
 
 def make_cassandra_env(install_dir, node_path, update_conf=True):
-    if is_win() and get_version_from_build(node_path=node_path) >= '2.1':
+    version_from_build = extension.get_cluster_class(install_dir).getNodeClass().get_version_from_build(node_path=node_path)
+    if is_win() and version_from_build >= '2.1':
         sh_file = os.path.join(CASSANDRA_CONF_DIR, CASSANDRA_WIN_ENV)
     else:
         sh_file = os.path.join(BIN_DIR, CASSANDRA_SH)
@@ -403,7 +403,7 @@ def make_cassandra_env(install_dir, node_path, update_conf=True):
     if not is_win() or not os.path.exists(dst):
         shutil.copy(orig, dst)
 
-    if update_conf and not (is_win() and get_version_from_build(node_path=node_path) >= '2.1'):
+    if update_conf and not (is_win() and version_from_build >= '2.1'):
         replacements = [
             ('CASSANDRA_HOME=', '\tCASSANDRA_HOME=%s' % install_dir),
             ('CASSANDRA_CONF=', '\tCASSANDRA_CONF=%s' % os.path.join(node_path, 'conf'))
@@ -427,45 +427,6 @@ def make_cassandra_env(install_dir, node_path, update_conf=True):
     env['CASSANDRA_HOME'] = install_dir
     env['CASSANDRA_CONF'] = os.path.join(node_path, 'conf')
 
-    return env
-
-
-def make_dse_env(install_dir, node_path, node_ip):
-    version = get_version_from_build(node_path=node_path)
-    env = os.environ.copy()
-    env['MAX_HEAP_SIZE'] = os.environ.get('CCM_MAX_HEAP_SIZE', '500M')
-    env['HEAP_NEWSIZE'] = os.environ.get('CCM_HEAP_NEWSIZE', '50M')
-    if version < '6.0':
-        env['SPARK_WORKER_MEMORY'] = os.environ.get('SPARK_WORKER_MEMORY', '1024M')
-        env['SPARK_WORKER_CORES'] = os.environ.get('SPARK_WORKER_CORES', '2')
-    else:
-        env['ALWAYSON_SQL_LOG_DIR'] = os.path.join(node_path, 'logs')
-    env['DSE_HOME'] = os.path.join(install_dir)
-    env['DSE_CONF'] = os.path.join(node_path, 'resources', 'dse', 'conf')
-    env['CASSANDRA_HOME'] = os.path.join(install_dir, 'resources', 'cassandra')
-    env['CASSANDRA_CONF'] = os.path.join(node_path, 'resources', 'cassandra', 'conf')
-    env['HIVE_CONF_DIR'] = os.path.join(node_path, 'resources', 'hive', 'conf')
-    env['SQOOP_CONF_DIR'] = os.path.join(node_path, 'resources', 'sqoop', 'conf')
-    env['TOMCAT_HOME'] = os.path.join(node_path, 'resources', 'tomcat')
-    env['TOMCAT_CONF_DIR'] = os.path.join(node_path, 'resources', 'tomcat', 'conf')
-    env['PIG_CONF_DIR'] = os.path.join(node_path, 'resources', 'pig', 'conf')
-    env['MAHOUT_CONF_DIR'] = os.path.join(node_path, 'resources', 'mahout', 'conf')
-    env['SPARK_CONF_DIR'] = os.path.join(node_path, 'resources', 'spark', 'conf')
-    env['SHARK_CONF_DIR'] = os.path.join(node_path, 'resources', 'shark', 'conf')
-    env['GREMLIN_CONSOLE_CONF_DIR'] = os.path.join(node_path, 'resources', 'graph', 'gremlin-console', 'conf')
-    env['SPARK_WORKER_DIR'] = os.path.join(node_path, 'spark', 'worker')
-    env['SPARK_LOCAL_DIRS'] = os.path.join(node_path, 'spark', '.local')
-    env['SPARK_EXECUTOR_DIRS'] = os.path.join(node_path, 'spark', 'rdd')
-    env['SPARK_WORKER_LOG_DIR'] = os.path.join(node_path, 'logs', 'spark', 'worker')
-    env['SPARK_MASTER_LOG_DIR'] = os.path.join(node_path, 'logs', 'spark', 'master')
-    env['DSE_LOG_ROOT'] = os.path.join(node_path, 'logs', 'dse')
-    env['CASSANDRA_LOG_DIR'] = os.path.join(node_path, 'logs')
-    env['SPARK_LOCAL_IP'] = '' + node_ip
-    if version >= '5.0':
-        env['HADOOP1_CONF_DIR'] = os.path.join(node_path, 'resources', 'hadoop', 'conf')
-        env['HADOOP2_CONF_DIR'] = os.path.join(node_path, 'resources', 'hadoop2-client', 'conf')
-    else:
-        env['HADOOP_CONF_DIR'] = os.path.join(node_path, 'resources', 'hadoop', 'conf')
     return env
 
 
@@ -584,32 +545,6 @@ def get_stress_bin(install_dir):
     return stress
 
 
-def isDse(install_dir):
-    if install_dir is None:
-        raise ArgumentError('Undefined installation directory')
-
-    bin_dir = os.path.join(install_dir, BIN_DIR)
-
-    if not os.path.exists(bin_dir):
-        raise ArgumentError('Installation directory does not contain a bin directory: %s' % install_dir)
-
-    dse_script = os.path.join(bin_dir, 'dse')
-    return os.path.exists(dse_script)
-
-
-def isOpscenter(install_dir):
-    if install_dir is None:
-        raise ArgumentError('Undefined installation directory')
-
-    bin_dir = os.path.join(install_dir, BIN_DIR)
-
-    if not os.path.exists(bin_dir):
-        raise ArgumentError('Installation directory does not contain a bin directory')
-
-    opscenter_script = os.path.join(bin_dir, 'opscenter')
-    return os.path.exists(opscenter_script)
-
-
 def validate_install_dir(install_dir):
     if install_dir is None:
         raise ArgumentError('Undefined installation directory')
@@ -618,21 +553,13 @@ def validate_install_dir(install_dir):
     if is_win():
         if ':' not in install_dir:
             raise ArgumentError(
-                '%s does not appear to be a cassandra or dse installation directory.  Please use absolute pathing (e.g. C:/cassandra.' % install_dir)
+                '%s does not appear to be an installation directory.  Please use absolute pathing (e.g. C:/cassandra.' % install_dir)
 
     bin_dir = os.path.join(install_dir, BIN_DIR)
-    if isDse(install_dir):
-        conf_dir = os.path.join(install_dir, DSE_CASSANDRA_CONF_DIR)
-    elif isOpscenter(install_dir):
-        conf_dir = os.path.join(install_dir, OPSCENTER_CONF_DIR)
-    else:
-        conf_dir = os.path.join(install_dir, CASSANDRA_CONF_DIR)
-    cnd = os.path.exists(bin_dir)
-    cnd = cnd and os.path.exists(conf_dir)
-    if not isOpscenter(install_dir):
-        cnd = cnd and os.path.exists(os.path.join(conf_dir, CASSANDRA_CONF))
-    if not cnd:
-        raise ArgumentError('%s does not appear to be a cassandra or dse installation directory' % install_dir)
+    conf_dir = extension.get_cluster_class(install_dir).getConfDir(install_dir)
+    if not (os.path.exists(bin_dir) and os.path.exists(conf_dir)):
+        raise ArgumentError('%s does not appear to be a %s installation directory (bin_dir: %s; conf_dir: %s)'
+                            % (install_dir, extension.get_cluster_class(install_dir).__name__, bin_dir, conf_dir))
 
 
 def assert_socket_available(itf):
@@ -766,75 +693,16 @@ def copy_directory(src_dir, dst_dir):
 
 
 def get_version_from_build(install_dir=None, node_path=None, cassandra=False):
-    if install_dir is None and node_path is not None:
-        install_dir = get_install_dir_from_cluster_conf(node_path)
-    if install_dir is not None:
-        # Binary cassandra installs will have a 0.version.txt file
-        version_file = os.path.join(install_dir, '0.version.txt')
-        if os.path.exists(version_file):
-            with open(version_file) as f:
-                return LooseVersion(f.read().strip())
-        # For DSE look for a dse*.jar and extract the version number
-        dse_version = get_dse_version(install_dir)
-        if (dse_version is not None):
-            if cassandra:
-                return get_dse_cassandra_version(install_dir)
-            else:
-                return LooseVersion(dse_version)
-        # Source cassandra installs we can read from build.xml
-        build = os.path.join(install_dir, 'build.xml')
-        with open(build) as f:
-            for line in f:
-                match = re.search('name="base\.version" value="([0-9.]+)[^"]*"', line)
-                if match:
-                    return LooseVersion(match.group(1))
-    raise CCMError("Cannot find version")
-
-
-def get_dse_version(install_dir):
-    for root, dirs, files in os.walk(install_dir):
-        for file in files:
-            match = re.search('^dse(?:-core)?-([0-9.]+)(?:-.*)?\.jar', file)
-            if match:
-                return match.group(1)
-    return None
-
-
-def get_dse_cassandra_version(install_dir):
-    dse_cmd = os.path.join(install_dir, 'bin', 'dse')
-    (output, stderr) = subprocess.Popen([dse_cmd, "cassandra", '-v'], stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE).communicate()
-    output = output.rstrip()
-    match = re.search('([0-9.]+)(?:-.*)?', str(output))
-    if match:
-        return LooseVersion(match.group(1))
-
-    raise ArgumentError("Unable to determine Cassandra version in: %s.\n\tstdout: '%s'\n\tstderr: '%s'"
-                        % (install_dir, output, stderr))
-
-
-def get_install_dir_from_cluster_conf(node_path):
-    file = os.path.join(os.path.dirname(node_path), "cluster.conf")
-    with open(file) as f:
-        for line in f:
-            match = re.search('install_dir: (.*?)$', line)
-            if match:
-                return match.group(1)
-    return None
-
-
-def is_dse_cluster(path):
-    try:
-        with open(os.path.join(path, 'CURRENT'), 'r') as f:
-            name = f.readline().strip()
-            cluster_path = os.path.join(path, name)
-            filename = os.path.join(cluster_path, 'cluster.conf')
-            with open(filename, 'r') as f:
-                data = yaml.safe_load(f)
-            if 'dse_dir' in data:
-                return True
-    except IOError:
-        return False
+    """
+    DEPRECATED: Use Node.get_version_from_build instead.
+    """
+    if not hasattr(get_version_from_build, "_deprecation_warned"):
+        print_("[DEPRECATION WARNING] ccmlib.common.get_version_from_build is deprecated, use ccmlib.Node.get_version_from_build instead", file=sys.stderr)
+        get_version_from_build._deprecation_warned = True
+    if install_dir:
+        return extension.get_cluster_class(install_dir).getNodeClass().get_version_from_build(install_dir, node_path, cassandra)
+    from ccmlib.node import Node
+    return Node.get_version_from_build(install_dir, node_path, cassandra)
 
 
 def invalidate_cache():
@@ -1020,7 +888,7 @@ def _update_java_version(current_java_version, current_java_home_version,
                            .format(current_java_version, current_java_home_version))
 
     if cassandra_version is None and install_dir:
-        cassandra_version = get_version_from_build(install_dir)
+        cassandra_version = extension.get_cluster_class(install_dir).getNodeClass().get_version_from_build(install_dir, cassandra=True)
 
     # Java versions supported by the Cassandra distribution
     supported_versions = get_supported_jdk_versions(cassandra_version, install_dir, for_build, os_env if os_env else os.environ)

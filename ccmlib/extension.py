@@ -15,6 +15,7 @@
 # limitations under the License.
 
 
+CLUSTER_TYPES = []
 PRE_CLUSTER_START_HOOKS = []
 POST_CLUSTER_START_HOOKS = []
 PRE_CLUSTER_STOP_HOOKS = []
@@ -25,6 +26,13 @@ APPEND_TO_SERVER_ENV_HOOKS = []
 APPEND_TO_CLIENT_ENV_HOOKS = []
 APPEND_TO_CQLSH_ARGS_HOOKS = []
 
+def get_cluster_class(install_dir, options=None):
+    for is_cluster_type in CLUSTER_TYPES:
+        cluster_class = is_cluster_type(install_dir, options)
+        if cluster_class:
+            return cluster_class
+    from ccmlib import cluster
+    return cluster.Cluster
 
 def pre_cluster_start(cluster):
     for hook in PRE_CLUSTER_START_HOOKS:
