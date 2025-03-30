@@ -42,6 +42,7 @@ from ccmlib import extension
 
 
 BIN_DIR = "bin"
+TOOLS_BIN_DIR = "tools/bin"
 CASSANDRA_CONF_DIR = "conf"
 
 CASSANDRA_CONF = "cassandra.yaml"
@@ -394,14 +395,18 @@ def rmdirs(path):
 
 def make_cassandra_env(install_dir, node_path, update_conf=True):
     version_from_build = extension.get_cluster_class(install_dir).getNodeClass().get_version_from_build(node_path=node_path)
-    if is_win() and version_from_build >= '2.1':
-        sh_file = os.path.join(CASSANDRA_CONF_DIR, CASSANDRA_WIN_ENV)
-    else:
-        sh_file = os.path.join(BIN_DIR, CASSANDRA_SH)
-    orig = os.path.join(install_dir, sh_file)
-    dst = os.path.join(node_path, sh_file)
-    if not is_win() or not os.path.exists(dst):
-        shutil.copy(orig, dst)
+    for sh_file_path in [ BIN_DIR, TOOLS_BIN_DIR ]:
+        if is_win() and version_from_build >= '2.1':
+            sh_file = os.path.join(CASSANDRA_CONF_DIR, CASSANDRA_WIN_ENV)
+        else:
+            sh_file = os.path.join(sh_file_path, CASSANDRA_SH)
+
+        orig = os.path.join(install_dir, sh_file)
+        if os.path.exists(orig):
+            dst = os.path.join(node_path, sh_file)
+            if not is_win() or not os.path.exists(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                shutil.copy(orig, dst)
 
     if update_conf and not (is_win() and version_from_build >= '2.1'):
         replacements = [
