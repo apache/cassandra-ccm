@@ -948,7 +948,11 @@ def _update_java_version(current_java_version, current_java_home_version,
 
 def assert_jdk_valid_for_cassandra_version(cassandra_version, env=None):
     jdk_version = float(get_jdk_version(env=env))
-    if cassandra_version >= '4.2':
+    if cassandra_version >= '5.1':
+        if jdk_version < 11 or 11 < jdk_version < 17 or 17 < jdk_version < 21 or 21 < jdk_version:
+            error('Cassandra {} requires Java 11 or Java 17 or Java 21, found Java {}'.format(cassandra_version, jdk_version))
+            exit(1)
+    elif cassandra_version >= '4.2':
         if jdk_version < 11 or 11 < jdk_version < 17 or 17 < jdk_version:
             error('Cassandra {} requires Java 11 or Java 17, found Java {}'.format(cassandra_version, jdk_version))
             exit(1)
