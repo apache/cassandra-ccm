@@ -16,5 +16,5 @@
 
 mock==5.1.0
 pytest==8.2.1
-requests==2.32.2
+requests==2.32.4
 pylint==3.2.2
