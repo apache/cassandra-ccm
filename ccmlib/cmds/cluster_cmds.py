@@ -128,9 +128,10 @@ class ClusterCreateCmd(Cmd):
                 common.validate_install_dir(options.install_dir)
             except ArgumentError:
                 parser.print_help()
-                parser.error("%s is not a valid cassandra directory. You must define a cassandra dir or version." % options.install_dir)
+                parser.error("%s is not a valid cassandra directory. You must define install-dir or version." % options.install_dir)
 
-            common.assert_jdk_valid_for_cassandra_version(extension.get_cluster_class(options.install_dir).getNodeClass().get_version_from_build(options.install_dir))
+            node_class = extension.get_cluster_class(options.install_dir).getNodeClass()
+            common.assert_jdk_valid_for_cassandra_version(node_class.get_version_from_build(options.install_dir, cassandra=True))
 
         if common.is_win() and os.path.exists('c:\windows\system32\java.exe'):
             print_("""WARN: c:\windows\system32\java.exe exists.
