@@ -14,7 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-name: CI - Python 3.x
+name: CI - Python 2.7
 
 on:
   push:
@@ -24,45 +24,50 @@ on:
 jobs:
   lint_test_smoke:
     runs-on: ubuntu-24.04
-    strategy:
-      matrix:
-        python-version: ['3.8', '3.11']  # TODO add '3.12' '3.13' '3.14'
-      fail-fast: false
+    container:
+      image: python:2.7-slim
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
+      - name: Install system dependencies
+        run: |
+          # Update sources to use Debian archive since Buster is EOL
+          sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list
+          sed -i '/security.debian.org/d' /etc/apt/sources.list
+          sed -i '/stretch-updates/d' /etc/apt/sources.list
+          sed -i '/buster-updates/d' /etc/apt/sources.list
+          mkdir -p /usr/share/man/man1
+          apt-get update
+          apt-get install -y curl netcat-openbsd sudo git gcc python-dev openjdk-11-jdk-headless ant
 
       - name: Set up Python environment
         run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt && pip install -r tests/requirements.txt
+          python -m pip install --upgrade 'pip<21.0' 'setuptools<45' 'wheel<0.35'
+          mkdir -p /github/home/.cache/pip
+          pip install -r requirements.txt
+          pip install 'pylint==1.9.5'
 
       - name: Run linter
         run: |
           pylint --output-format msvs --reports y ccmlib || true
           pylint --output-format msvs --reports y tests || true
 
-      - name: Run tests
-        run: |
-          pytest --junitxml=junit.xml tests
-
       - name: Smoke tests
+        shell: bash
         run: |
-          sudo ./setup.py install
+          export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+          # hack to fix setup.cfg not being parsed by pbr (FIXME why isn't pbr working...)
+          export PBR_VERSION=$(grep version setup.cfg | awk -F= '{print $2}' | xargs)
+          ./setup.py install
           set -x
           LATEST_4_0=$(curl -s https://downloads.apache.org/cassandra/ | grep -oE '4\.0\.[0-9]+' | sort -V | tail -1)
           LATEST_4_1=$(curl -s https://downloads.apache.org/cassandra/ | grep -oE '4\.1\.[0-9]+' | sort -V | tail -1)
-          LATEST_5_0=$(curl -s https://downloads.apache.org/cassandra/ | grep -oE '5\.0\.[0-9]+' | sort -V | tail -1)
           ccm_test() {
             for i in {1..9}; do
               echo "Checking nc -z 127.0.0.1 7000"
               while nc -z 127.0.0.1 7000 ; do echo . ; ./ccm stop || true ; sleep 1 ; done
-              ./ccm start -v && ./ccm remove && return 0 || echo retrying
+              ./ccm start -v --root && ./ccm remove && return 0 || echo retrying
               sleep 20
             done
             echo "ccm start failed after 9 attempts"
@@ -74,22 +79,10 @@ jobs:
           ccm_test
           ./ccm create test -v ${LATEST_4_1} -n1 --vnodes --quiet
           ccm_test
-          ./ccm create test -v ${LATEST_5_0} -n1 --vnodes --quiet
-          ccm_test
           ./ccm create test --version='git:cassandra-4.0' -n1 --vnodes --quiet
           ccm_test
           ./ccm create test --version='git:cassandra-4.1' -n1 --vnodes --quiet
           ccm_test
-          ./ccm create test --version='git:cassandra-5.0' -n1 --vnodes --quiet
-          ccm_test
-          ./ccm create test --version='git:trunk' -n1 --vnodes --quiet
-          ccm_test
-          ./ccm create test -v 6.8.54 -n1 --vnodes --dse --quiet
-          ccm_test
-
-          # todo, when hcd is available
-          #./ccm create test -v 1.1.0 -n1 --vnodes --hcd --quiet
-          #ccm_test
 
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v5
