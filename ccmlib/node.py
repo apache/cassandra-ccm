@@ -403,7 +403,7 @@ class Node(object):
 
     def get_base_cassandra_version(self):
         version = self.get_cassandra_version()
-        return float('.'.join(re.split('\.|-',version.vstring)[:2]))
+        return float('.'.join(str(x) for x in version.version[:2]))
 
     def set_configuration_options(self, values=None, delete_empty=False, delete_always=False):
         """
