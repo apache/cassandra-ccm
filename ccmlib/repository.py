@@ -42,7 +42,7 @@ except ImportError:
 from ccmlib import common
 from ccmlib.common import (ArgumentError, CCMError,
                            update_java_version, get_default_path, get_jdk_version_int,
-                           platform_binary, rmdirs, validate_install_dir)
+                           platform_binary, platform_binary_on_path, rmdirs, validate_install_dir)
 from six.moves import urllib
 
 
@@ -250,7 +250,7 @@ def clone_development(git_repo, version, verbose=False, alias=False):
                 process = subprocess.Popen(['git', 'pull'], cwd=target_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 out, _, _ = log_info(process, logger)
                 assert out == 0, "Could not do a git pull"
-                process = subprocess.Popen([platform_binary('ant'), 'realclean'], cwd=target_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                process = subprocess.Popen([platform_binary_on_path('ant'), 'realclean'], cwd=target_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 out, _, _ = log_info(process, logger)
                 assert out == 0, "Could not run 'ant realclean'"
 
@@ -361,7 +361,7 @@ def compile_version(version, target_dir, verbose=False):
                 cmd = [mvnw, 'verify', '-DskipTest', '-DskipDocker','-DskipDeb','-DskipRPM','-DskipCqlsh', '-Pdatastax-artifactory']
             else:
                 # No gradle, use ant
-                cmd = [platform_binary('ant'), 'jar']
+                cmd = [platform_binary_on_path('ant'), 'jar']
                 if get_jdk_version_int(env=env) >= 11:
                     cmd.append('-Duse.jdk11=true')
         while attempt < 3 and ret_val != 0:
@@ -392,11 +392,11 @@ def compile_version(version, target_dir, verbose=False):
                 full_path = os.path.join(stress_bin_dir, f)
                 os.chmod(full_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
 
-            process = subprocess.Popen([platform_binary('ant'), 'build'], cwd=stress_dir, env=env,
+            process = subprocess.Popen([platform_binary_on_path('ant'), 'build'], cwd=stress_dir, env=env,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             ret_val, _, _ = log_info(process, logger)
             if ret_val != 0:
-                process = subprocess.Popen([platform_binary('ant'), 'stress-build'], cwd=target_dir, env=env,
+                process = subprocess.Popen([platform_binary_on_path('ant'), 'stress-build'], cwd=target_dir, env=env,
                                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
                 ret_val, _, _ = log_info(process, logger)
                 if ret_val != 0:

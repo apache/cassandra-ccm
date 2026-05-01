@@ -438,12 +438,12 @@ def make_cassandra_env(install_dir, node_path, update_conf=True):
 
 def check_win_requirements():
     if is_win():
-        # Make sure ant.bat is in the path and executable before continuing
+        # Make sure ant is in the path and executable before continuing
         try:
-            subprocess.Popen('ant.bat', stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            subprocess.Popen(platform_binary_on_path('ant'), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         except Exception:
             sys.exit(
-                "ERROR!  Could not find or execute ant.bat.  Please fix this before attempting to run ccm on Windows.")
+                "ERROR!  Could not find or execute ant.  Please fix this before attempting to run ccm on Windows.")
 
         # Confirm matching architectures
         # 32-bit python distributions will launch 32-bit cmd environments, losing PowerShell execution privileges on a 64-bit system
@@ -490,6 +490,36 @@ def join_bin(root, dir, executable):
 
 def platform_binary(input):
     return input + ".bat" if is_win() else input
+
+
+def platform_binary_on_path(input):
+    if not is_win():
+        return input
+
+    _, ext = os.path.splitext(input)
+    candidates = [input] if ext else [input + ".bat", input + ".cmd", input + ".exe", input]
+    for candidate in candidates:
+        path = find_executable_on_path(candidate)
+        if path:
+            return path
+
+    return platform_binary(input)
+
+
+def find_executable_on_path(executable):
+    if os.path.isabs(executable) and os.path.isfile(executable):
+        return executable
+
+    path = os.environ.get('PATH', '')
+    for directory in path.split(os.pathsep):
+        directory = directory.strip('"')
+        if not directory:
+            continue
+        candidate = os.path.join(directory, executable)
+        if os.path.isfile(candidate):
+            return candidate
+
+    return None
 
 
 def platform_pager():
