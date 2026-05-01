@@ -79,11 +79,8 @@ Windows only:
   - cqlsh started from ccm show incorrect prompts on command-prompt
   - non nodetool-based command-line options fail (sstablesplit, scrub, etc)
   - To install psutil, you must use the .msi from pypi. pip install psutil will not work
-  - You will need ant.bat in your PATH in order to build C* from source
+  - You will need ant in your PATH in order to build C* from source
   - You must run with an Unrestricted Powershell Execution-Policy if using Cassandra 2.1.0+
-  - Ant installed via [chocolatey](https://chocolatey.org/) will not be found by ccm, so you must create a symbolic
-    link in order to fix the issue (as administrator):
-    - cmd /c mklink C:\ProgramData\chocolatey\bin\ant.bat C:\ProgramData\chocolatey\bin\ant.exe
 
 macOS only:
   - Airplay listens for incoming connections on 7000 so disable `Settings` -> `General` -> `AirDrop & Handoff` -> `AirPlay Receiver`

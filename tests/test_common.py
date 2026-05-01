@@ -15,6 +15,9 @@
 # limitations under the License.
 
 
+import os
+import shutil
+import tempfile
 import unittest
 from mock import patch
 
@@ -56,6 +59,25 @@ class TestCommon(ccmtest.Tester):
         self.assertFalse(common.is_modern_windows_install(1.0))
         self.assertFalse(common.is_modern_windows_install('1.0'))
         self.assertFalse(common.is_modern_windows_install(LooseVersion('1.0')))
+
+    @patch('ccmlib.common.is_win')
+    def test_platform_binary_on_path_finds_windows_exe(self, mock_is_win):
+        mock_is_win.return_value = True
+        old_path = os.environ.get('PATH')
+        temp_dir = tempfile.mkdtemp()
+        try:
+            ant_exe = os.path.join(temp_dir, 'ant.exe')
+            with open(ant_exe, 'w'):
+                pass
+            os.environ['PATH'] = temp_dir
+
+            self.assertEqual(common.platform_binary_on_path('ant'), ant_exe)
+        finally:
+            if old_path is None:
+                os.environ.pop('PATH', None)
+            else:
+                os.environ['PATH'] = old_path
+            shutil.rmtree(temp_dir)
 
     def test_merge_configuration(self):
         # test for merging dict val in key, value pair
