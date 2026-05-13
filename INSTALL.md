@@ -101,13 +101,13 @@ Remote Execution only:
 Installation
 ------------
 
-ccm uses python distutils so from the source directory run:
+To install ccm from the source directory for the current user, run:
 
-    sudo ./setup.py install
+    python -m pip install --user .
 
 ccm is available on the [Python Package Index][pip]:
 
-    pip install ccm
+    python -m pip install --user ccm
 
 There is also a [Homebrew package][brew] available:
 
