@@ -25,12 +25,12 @@ import shutil
 import tarfile
 import tempfile
 from argparse import ArgumentError
-from distutils.version import LooseVersion
 
 from ccmlib import common, repository
 from ccmlib.cluster import Cluster
 from ccmlib.common import ArgumentError, rmdirs
 from ccmlib.hcd.hcd_node import HcdNode
+from ccmlib.version import LooseVersion
 
 try:
     import ConfigParser
