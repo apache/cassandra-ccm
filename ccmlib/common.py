@@ -567,6 +567,14 @@ def validate_install_dir(install_dir):
         raise ArgumentError('%s does not appear to be a %s installation directory (bin_dir: %s; conf_dir: %s)'
                             % (install_dir, extension.get_cluster_class(install_dir).__name__, bin_dir, conf_dir))
 
+def wait_for_socket_available(itf, timeout=15):
+    start = time.time()
+    while time.time() - start < timeout:
+        try:
+            return assert_socket_available(itf)
+        except UnavailableSocketError:
+            time.sleep(1)
+    return assert_socket_available(itf)
 
 def assert_socket_available(itf):
     info = socket.getaddrinfo(itf[0], itf[1], socket.AF_UNSPEC, socket.SOCK_STREAM)
