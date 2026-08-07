@@ -1069,9 +1069,6 @@ class Node(object):
                     else:
                         raise NodeError("Problem stopping node %s" % self.name)
 
-                for itf in list(self.network_interfaces.values()):
-                    if itf is not None:
-                        common.wait_for_socket_available(itf)
             return True
         else:
             # Make sure it is actually stopped even if the PID wasn't found for some reason

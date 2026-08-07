@@ -543,7 +543,7 @@ class Cluster(object):
             if not node.is_running():
                 for itf in node.network_interfaces.values():
                     if itf is not None:
-                        common.wait_for_socket_available(itf)
+                        common.assert_socket_available(itf)
 
         started = []
         for node in list(self.nodes.values()):

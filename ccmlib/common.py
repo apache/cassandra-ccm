@@ -567,14 +567,325 @@ def validate_install_dir(install_dir):
         raise ArgumentError('%s does not appear to be a %s installation directory (bin_dir: %s; conf_dir: %s)'
                             % (install_dir, extension.get_cluster_class(install_dir).__name__, bin_dir, conf_dir))
 
-def wait_for_socket_available(itf, timeout=15):
-    start = time.time()
-    while time.time() - start < timeout:
+def diagnose_port(addr, port):
+    """
+    Collect exhaustive diagnostic info about why a port is still held.
+    Covers: socket state, process holding it, process details, FD/socket internals.
+    All output goes to the ccm logger at WARNING level so it's visible in test output.
+    """
+    lines = []
+    lines.append("=" * 72)
+    lines.append("PORT DIAGNOSTIC: %s:%d is not available after shutdown" % (addr, port))
+    lines.append("=" * 72)
+
+    def _run(cmd, label):
+        """Run a command, return output or error string."""
         try:
-            return assert_socket_available(itf)
-        except UnavailableSocketError:
-            time.sleep(1)
-    return assert_socket_available(itf)
+            out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, text=True, timeout=10)
+            return out.strip()
+        except subprocess.CalledProcessError as e:
+            return "(exit %d) %s" % (e.returncode, e.output.strip() if e.output else "")
+        except FileNotFoundError:
+            return "(command not found: %s)" % cmd[0]
+        except subprocess.TimeoutExpired:
+            return "(timed out)"
+        except Exception as e:
+            return "(error: %s)" % str(e)
+
+    is_linux = sys.platform.startswith("linux")
+    is_mac = sys.platform == "darwin"
+
+    # -------------------------------------------------------------------------
+    # 1. Socket state: all connections on this port in ALL TCP states
+    #    (LISTEN, ESTABLISHED, TIME_WAIT, CLOSE_WAIT, FIN_WAIT, etc.)
+    # -------------------------------------------------------------------------
+    lines.append("")
+    lines.append("--- [1] ALL SOCKET STATES ON PORT %d ---" % port)
+    if is_linux:
+        # ss shows all TCP states for this sport; -e adds inode and UID
+        lines.append("  ss -tanpe sport = :%d:" % port)
+        lines.append("  " + _run(["ss", "-tanpe", "sport", "=", ":%d" % port], "ss all states"))
+        lines.append("")
+        # Also check UDP in case something weird is happening
+        lines.append("  ss -uanpe sport = :%d:" % port)
+        lines.append("  " + _run(["ss", "-uanpe", "sport", "=", ":%d" % port], "ss udp"))
+        lines.append("")
+        # Raw /proc/net/tcp for kernel-level state codes
+        lines.append("  /proc/net/tcp entries for port %d (hex %04X):" % (port, port))
+        try:
+            hex_port = "%04X" % port
+            with open("/proc/net/tcp", "r") as f:
+                header = f.readline().strip()
+                lines.append("    " + header)
+                for line in f:
+                    if ":" + hex_port in line.split()[1]:
+                        lines.append("    " + line.strip())
+            with open("/proc/net/tcp6", "r") as f:
+                f.readline()  # skip header
+                for line in f:
+                    if ":" + hex_port in line.split()[1]:
+                        lines.append("    " + line.strip())
+        except Exception as e:
+            lines.append("    (error reading /proc/net/tcp: %s)" % e)
+    elif is_mac:
+        # netstat on macOS shows all states; lsof shows the holders
+        lines.append("  netstat -an (filtered for port %d):" % port)
+        try:
+            out = subprocess.check_output(["netstat", "-an"], stderr=subprocess.STDOUT, text=True, timeout=10)
+            for line in out.splitlines():
+                if ".%d " % port in line or ":%d " % port in line:
+                    lines.append("    " + line.strip())
+        except Exception as e:
+            lines.append("    (error: %s)" % e)
+        lines.append("")
+        lines.append("  lsof -i :%d -P -n (all protocols/states):" % port)
+        lines.append("  " + _run(["lsof", "-i", ":%d" % port, "-P", "-n"], "lsof all"))
+    else:
+        lines.append("  (unsupported platform: %s)" % sys.platform)
+
+    # -------------------------------------------------------------------------
+    # 2. Process(es) holding the port: PID, name, FD number
+    # -------------------------------------------------------------------------
+    lines.append("")
+    lines.append("--- [2] PROCESS(ES) HOLDING PORT %d ---" % port)
+    holder_pids = set()
+
+    if is_linux:
+        # fuser gives us PIDs directly
+        lines.append("  fuser %d/tcp:" % port)
+        fuser_out = _run(["fuser", "%d/tcp" % port], "fuser")
+        lines.append("  " + fuser_out)
+        # Parse PIDs from fuser output (format: "9042/tcp:  12345 12346")
+        for token in fuser_out.split():
+            token = token.strip()
+            if token.isdigit():
+                holder_pids.add(int(token))
+
+        # Also get from ss output which includes PIDs
+        lines.append("  ss -tlnp sport = :%d:" % port)
+        ss_out = _run(["ss", "-tlnp", "sport", "=", ":%d" % port], "ss listen")
+        lines.append("  " + ss_out)
+        # Parse PIDs from ss (format: users:(("java",pid=12345,fd=42)))
+        for m in re.finditer(r'pid=(\d+)', ss_out):
+            holder_pids.add(int(m.group(1)))
+
+    elif is_mac:
+        # lsof -t gives just PIDs
+        lines.append("  lsof -i :%d -t (PIDs only):" % port)
+        lsof_t_out = _run(["lsof", "-i", ":%d" % port, "-t"], "lsof pids")
+        lines.append("  " + lsof_t_out)
+        for token in lsof_t_out.splitlines():
+            token = token.strip()
+            if token.isdigit():
+                holder_pids.add(int(token))
+
+        # Full lsof with FD detail
+        lines.append("  lsof -i :%d -P -n:" % port)
+        lines.append("  " + _run(["lsof", "-i", ":%d" % port, "-P", "-n"], "lsof detail"))
+
+    lines.append("  Holder PIDs found: %s" % (sorted(holder_pids) if holder_pids else "(none)"))
+
+    # -------------------------------------------------------------------------
+    # 3. Full process info for each holder: cmdline, state, parent, tree
+    # -------------------------------------------------------------------------
+    lines.append("")
+    lines.append("--- [3] PROCESS DETAILS FOR EACH HOLDER ---")
+
+    for pid in sorted(holder_pids):
+        lines.append("")
+        lines.append("  PID %d:" % pid)
+        if is_linux:
+            # Process state
+            lines.append("    /proc/%d/status:" % pid)
+            for key in ["Name", "State", "Pid", "PPid", "Uid", "Threads"]:
+                try:
+                    with open("/proc/%d/status" % pid, "r") as f:
+                        for sline in f:
+                            if sline.startswith(key + ":"):
+                                lines.append("      " + sline.strip())
+                                break
+                except Exception as e:
+                    lines.append("      (cannot read: %s)" % e)
+                    break
+
+            # Full command line
+            lines.append("    /proc/%d/cmdline:" % pid)
+            try:
+                with open("/proc/%d/cmdline" % pid, "r") as f:
+                    cmdline = f.read().replace('\0', ' ').strip()
+                    # Truncate if absurdly long (java classpaths)
+                    if len(cmdline) > 2000:
+                        cmdline = cmdline[:2000] + " ... (truncated)"
+                    lines.append("      " + cmdline)
+            except Exception as e:
+                lines.append("      (cannot read: %s)" % e)
+
+            # Process tree from this PID upward
+            lines.append("    pstree -psalT %d:" % pid)
+            lines.append("    " + _run(["pstree", "-psalT", str(pid)], "pstree"))
+
+            # Check if zombie
+            try:
+                with open("/proc/%d/stat" % pid, "r") as f:
+                    stat_line = f.read()
+                    # Field 3 is state: R/S/D/Z/T
+                    parts = stat_line.split(")")
+                    if len(parts) > 1:
+                        state_char = parts[1].strip().split()[0]
+                        lines.append("    Process state char: %s" % state_char)
+            except Exception:
+                pass
+
+        elif is_mac:
+            # ps with full detail
+            lines.append("    ps -p %d -o pid,ppid,stat,user,start,command:" % pid)
+            lines.append("    " + _run(["ps", "-p", str(pid), "-o", "pid,ppid,stat,user,start,command"], "ps"))
+
+            # Parent chain
+            lines.append("    ps -p %d -o pid,ppid (parent chain):" % pid)
+            current_pid = pid
+            for _ in range(10):  # max depth
+                ps_out = _run(["ps", "-p", str(current_pid), "-o", "pid=,ppid=,comm="], "ps parent")
+                lines.append("      " + ps_out)
+                parts = ps_out.split()
+                if len(parts) >= 2 and parts[1].isdigit():
+                    parent = int(parts[1])
+                    if parent <= 1 or parent == current_pid:
+                        break
+                    current_pid = parent
+                else:
+                    break
+
+    if not holder_pids:
+        lines.append("  No holder PIDs found — port may be in TIME_WAIT with no listener,")
+        lines.append("  or the process exited between the bind() failure and this diagnostic.")
+
+    # -------------------------------------------------------------------------
+    # 4. Detailed socket/FD info: all FDs held by each process, socket options
+    # -------------------------------------------------------------------------
+    lines.append("")
+    lines.append("--- [4] FD AND SOCKET DETAILS FOR EACH HOLDER ---")
+
+    for pid in sorted(holder_pids):
+        lines.append("")
+        lines.append("  PID %d:" % pid)
+        if is_linux:
+            # All socket FDs for this process
+            lines.append("    All socket FDs (ls -la /proc/%d/fd/ | grep socket):" % pid)
+            try:
+                fd_dir = "/proc/%d/fd" % pid
+                for fd_name in os.listdir(fd_dir):
+                    try:
+                        link = os.readlink(os.path.join(fd_dir, fd_name))
+                        if "socket:" in link:
+                            lines.append("      fd/%s -> %s" % (fd_name, link))
+                    except (OSError, PermissionError):
+                        pass
+            except Exception as e:
+                lines.append("      (cannot read FDs: %s)" % e)
+
+            # Socket inode cross-reference: find ALL processes sharing the same socket inode
+            lines.append("    Cross-reference: other processes sharing same socket inodes:")
+            try:
+                fd_dir = "/proc/%d/fd" % pid
+                my_socket_inodes = set()
+                for fd_name in os.listdir(fd_dir):
+                    try:
+                        link = os.readlink(os.path.join(fd_dir, fd_name))
+                        if "socket:" in link:
+                            # Extract inode number from "socket:[12345]"
+                            inode = link.split("[")[1].rstrip("]")
+                            my_socket_inodes.add(inode)
+                    except (OSError, PermissionError, IndexError):
+                        pass
+
+                if my_socket_inodes:
+                    # Search all /proc/*/fd for matching inodes
+                    for proc_entry in os.listdir("/proc"):
+                        if not proc_entry.isdigit():
+                            continue
+                        other_pid = int(proc_entry)
+                        if other_pid == pid:
+                            continue
+                        other_fd_dir = "/proc/%d/fd" % other_pid
+                        try:
+                            for fd_name in os.listdir(other_fd_dir):
+                                try:
+                                    link = os.readlink(os.path.join(other_fd_dir, fd_name))
+                                    if "socket:" in link:
+                                        inode = link.split("[")[1].rstrip("]")
+                                        if inode in my_socket_inodes:
+                                            lines.append("      PID %d also holds socket:[%s] (fd %s)" %
+                                                         (other_pid, inode, fd_name))
+                                except (OSError, PermissionError, IndexError):
+                                    pass
+                        except (OSError, PermissionError):
+                            pass
+            except Exception as e:
+                lines.append("      (error scanning for shared inodes: %s)" % e)
+
+            # Socket options via /proc/net/tcp inode match
+            lines.append("    Socket details from /proc/net/tcp (matched by inode):")
+            try:
+                hex_port = "%04X" % port
+                with open("/proc/net/tcp", "r") as f:
+                    header = f.readline().strip()
+                    lines.append("      " + header)
+                    for tcp_line in f:
+                        # inode is field 9 (0-indexed)
+                        fields = tcp_line.strip().split()
+                        if len(fields) > 9 and fields[9] in my_socket_inodes:
+                            lines.append("      " + tcp_line.strip())
+                with open("/proc/net/tcp6", "r") as f:
+                    f.readline()
+                    for tcp_line in f:
+                        fields = tcp_line.strip().split()
+                        if len(fields) > 9 and fields[9] in my_socket_inodes:
+                            lines.append("      " + tcp_line.strip())
+            except Exception as e:
+                lines.append("      (error: %s)" % e)
+
+        elif is_mac:
+            # lsof for this specific PID — all FDs, filtered to sockets
+            lines.append("    All network FDs for PID %d:" % pid)
+            lines.append("    " + _run(["lsof", "-p", str(pid), "-i", "-P", "-n"], "lsof net fds"))
+            lines.append("")
+            # Full FD list (shows inherited FDs)
+            lines.append("    All FDs (showing inheritance):")
+            lsof_all = _run(["lsof", "-p", str(pid), "-P", "-n"], "lsof all fds")
+            # Filter to keep header + socket/pipe/FD lines, truncate if huge
+            lsof_lines = lsof_all.splitlines()
+            if len(lsof_lines) > 100:
+                lines.append("    (%d total FDs, showing first 50 + sockets)" % len(lsof_lines))
+                for l in lsof_lines[:1]:  # header
+                    lines.append("      " + l)
+                for l in lsof_lines[1:]:
+                    if "TCP" in l or "UDP" in l or "sock" in l.lower() or "LISTEN" in l:
+                        lines.append("      " + l)
+            else:
+                for l in lsof_lines:
+                    lines.append("      " + l)
+
+    if not holder_pids:
+        # Even without a holder PID, dump raw socket state for TIME_WAIT analysis
+        if is_linux:
+            lines.append("  All TIME_WAIT sockets on port %d:" % port)
+            lines.append("  " + _run(["ss", "-tan", "state", "time-wait", "sport", "=", ":%d" % port],
+                                     "ss time-wait"))
+            lines.append("  All CLOSE_WAIT sockets on port %d:" % port)
+            lines.append("  " + _run(["ss", "-tan", "state", "close-wait", "sport", "=", ":%d" % port],
+                                     "ss close-wait"))
+
+    lines.append("")
+    lines.append("=" * 72)
+    lines.append("END PORT DIAGNOSTIC for %s:%d" % (addr, port))
+    lines.append("=" * 72)
+
+    # Emit all at once
+    full_report = "\n".join(lines)
+    warning(full_report)
+    return full_report
+
 
 def assert_socket_available(itf):
     info = socket.getaddrinfo(itf[0], itf[1], socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -592,6 +903,10 @@ def assert_socket_available(itf):
     except socket.error as msg:
         s.close()
         addr, port = itf
+        try:
+            diagnose_port(addr, port)
+        except Exception as e:
+            warning("Failed to run port diagnostic for %s:%s: %s" % (addr, port, e))
         raise UnavailableSocketError(
             "Inet address %s:%s is not available: %s; a cluster may already be running or you may need to add the loopback alias" % (
             addr, port, msg))
