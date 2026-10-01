@@ -46,7 +46,7 @@ from six.moves import xrange
 
 logger = logging.getLogger(__name__)
 
-NODE_WAIT_TIMEOUT_IN_SECS = 90
+NODE_WAIT_TIMEOUT_IN_SECS = 120
 DEFAULT_UPDATE_PID_TIMEOUT_IN_SECS = int(os.environ.get('CCM_UPDATE_PID_DEFAULT_TIMEOUT', 30))
 
 class Status():
