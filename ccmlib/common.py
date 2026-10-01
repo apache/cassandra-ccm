@@ -819,8 +819,17 @@ def get_supported_jdk_versions(cassandra_version, install_dir, for_build, env):
 
 
 def get_available_jdk_versions(env):
-    return {get_jdk_version_int(os.path.join(env_value, 'bin', 'java')): env_key
-            for env_key, env_value in env.items() if re.search("JAVA([0-9]+)?_HOME", env_key)}
+    jdk_versions = {}
+    probed = set()
+    for env_key, env_value in env.items():
+        if not re.search("JAVA([0-9]+)?_HOME", env_key):
+            continue
+        java_home = os.path.realpath(env_value)
+        if java_home in probed:
+            continue
+        probed.add(java_home)
+        jdk_versions[get_jdk_version_int(os.path.join(env_value, 'bin', 'java'))] = env_key
+    return jdk_versions
 
 
 def update_java_version(jvm_version=None, install_dir=None, cassandra_version=None, env=None,
