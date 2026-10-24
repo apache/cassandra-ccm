@@ -43,10 +43,15 @@ from ccmlib import common
 from ccmlib.common import (ArgumentError, CCMError,
                            update_java_version, get_default_path, get_jdk_version_int,
                            platform_binary, rmdirs, validate_install_dir)
-from six.moves import urllib
+from six.moves import http_client, urllib
 
 
 ARCHIVE = "http://archive.apache.org/dist/cassandra"
+# dlcdn and downloads only keep the latest releases; archive keeps all of them but is slow and throttled
+MIRRORS = ["https://dlcdn.apache.org/cassandra", "https://downloads.apache.org/cassandra", ARCHIVE]
+DOWNLOAD_TIMEOUT = 45  # seconds a download may wait for data before the attempt is abandoned
+DOWNLOAD_ATTEMPTS = 3  # attempts per url
+DOWNLOAD_RETRY_DELAY = 5  # seconds, multiplied by the attempt number
 GIT_REPO = "https://github.com/apache/cassandra.git"
 GITHUB_REPO = "https://github.com/apache/cassandra"
 GITHUB_TAGS = "https://api.github.com/repos/apache/cassandra/git/refs/tags"
@@ -68,7 +73,7 @@ def setup(version, verbose=False):
             download_version(version, verbose=verbose, binary=True)
             cdir = version_directory(version)
         except Exception as e:
-            # If we failed to download from ARCHIVE,
+            # If we failed to download from the mirrors,
             # then we build from source from the git repo,
             # as it is more reliable.
             # We don't do this if binary: or source: were
@@ -283,17 +288,18 @@ def download_version(version, url=None, verbose=False, binary=False):
     if binary == True, download precompiled tarball, otherwise build from source tarball.
     """
 
-    archive_url = ARCHIVE
+    repositories = MIRRORS
     if CCM_CONFIG.has_option('repositories', 'cassandra'):
-        archive_url = CCM_CONFIG.get('repositories', 'cassandra')
+        repositories = [CCM_CONFIG.get('repositories', 'cassandra')]
 
-    if binary:
-        archive_url = "%s/%s/apache-cassandra-%s-bin.tar.gz" % (archive_url, version, version) if url is None else url
+    if url is not None:
+        urls = [url]
     else:
-        archive_url = "%s/%s/apache-cassandra-%s-src.tar.gz" % (archive_url, version, version) if url is None else url
+        kind = 'bin' if binary else 'src'
+        urls = ["%s/%s/apache-cassandra-%s-%s.tar.gz" % (r, version, version, kind) for r in repositories]
     _, target = tempfile.mkstemp(suffix=".tar.gz", prefix="ccm-")
     try:
-        __download(archive_url, target, show_progress=verbose)
+        __download_from_first(urls, target, show_progress=verbose)
         common.info("Extracting {} as version {} ...".format(target, version))
         tar = tarfile.open(target)
         dir = tar.next().name.split("/")[0]  # pylint: disable=all
@@ -477,6 +483,21 @@ def get_tagged_version_numbers(series='stable'):
         raise AssertionError("unknown release series: {series}".format(series=series))
 
 
+def __download_from_first(urls, target, show_progress=False):
+    """Download the first of urls that is available, moving on to the next one when a url is missing or keeps failing"""
+    for i, url in enumerate(urls):
+        try:
+            __download(url, target, show_progress=show_progress)
+            return
+        except (EnvironmentError, http_client.HTTPException) as e:
+            if i == len(urls) - 1:
+                raise
+            if isinstance(e, urllib.error.HTTPError) and e.code == 404:
+                common.debug("{} not found, trying {}".format(url, urls[i + 1]))
+            else:
+                common.warning("Downloading {} failed: {}, trying {}".format(url, e, urls[i + 1]))
+
+
 def __download(url, target, username=None, password=None, show_progress=False):
     if username is not None:
         password_mgr = urllib.request.HTTPPasswordMgrWithDefaultRealm()
@@ -485,36 +506,60 @@ def __download(url, target, username=None, password=None, show_progress=False):
         opener = urllib.request.build_opener(handler)
         urllib.request.install_opener(opener)  # pylint: disable=E1121
 
-    u = urllib.request.urlopen(url)
-    f = open(target, 'wb')
-    meta = u.info()
-    file_size = int(meta.get("Content-Length"))
-    common.info("Downloading {} to {} ({:.3f}MB)".format(url, target, float(file_size) / (1024 * 1024)))
+    # local files (file://) are not retried
+    attempts = DOWNLOAD_ATTEMPTS if url.startswith(('http://', 'https://')) else 1
+    for attempt in range(1, attempts + 1):
+        try:
+            __download_once(url, target, show_progress)
+            return
+        except urllib.error.HTTPError as e:
+            # a missing file or a refused request will not change on retry
+            if e.code < 500 and e.code not in (408, 429):
+                raise
+            error = e
+        except urllib.error.URLError as e:
+            # neither will a certificate that cannot be verified
+            if getattr(e.reason, 'reason', None) == 'CERTIFICATE_VERIFY_FAILED':
+                raise
+            error = e
+        # EnvironmentError covers URLError, socket errors and timeouts on both Python 2 and 3
+        except (EnvironmentError, http_client.HTTPException) as e:
+            error = e
+        if attempt == attempts:
+            raise error
+        common.warning("Downloading {} failed (attempt {} of {}): {}".format(url, attempt, attempts, error))
+        time.sleep(DOWNLOAD_RETRY_DELAY * attempt)
 
-    file_size_dl = 0
-    block_sz = 8192
-    status = None
-    attempts = 0
-    while file_size_dl < file_size:
-        buffer = u.read(block_sz)
-        if not buffer:
-            attempts = attempts + 1
-            if attempts >= 5:
-                raise CCMError("Error downloading file (nothing read after {} attempts, downloded only {} of {} bytes)".format(attempts, file_size_dl, file_size))
-            time.sleep(0.5 * attempts)
-            continue
+
+def __download_once(url, target, show_progress):
+    # the timeout bounds every socket operation, so a stalled connection fails instead of blocking forever
+    u = urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT)
+    try:
+        content_length = u.info().get("Content-Length")
+        file_size = int(content_length) if content_length is not None else None
+        if file_size is not None:
+            common.info("Downloading {} to {} ({:.3f}MB)".format(url, target, float(file_size) / (1024 * 1024)))
         else:
-            attempts = 0
+            common.info("Downloading {} to {}".format(url, target))
 
-        file_size_dl += len(buffer)
-        f.write(buffer)
-        if show_progress:
-            status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
-            status = chr(8) * (len(status) + 1) + status
-            print_(status, end='')
+        file_size_dl = 0
+        block_sz = 8192
+        with open(target, 'wb') as f:
+            while True:
+                buffer = u.read(block_sz)
+                if not buffer:
+                    break
+                file_size_dl += len(buffer)
+                f.write(buffer)
+                if show_progress and file_size:
+                    status = r"%10d  [%3.2f%%]" % (file_size_dl, file_size_dl * 100. / file_size)
+                    status = chr(8) * (len(status) + 1) + status
+                    print_(status, end='')
+    finally:
+        u.close()
 
-    f.close()
-    u.close()
+    if file_size is not None and file_size_dl < file_size:
+        raise IOError("Connection closed after {} of {} bytes".format(file_size_dl, file_size))
 
 
 def __get_dir():
