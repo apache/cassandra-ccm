@@ -52,11 +52,19 @@ MIRRORS = ["https://dlcdn.apache.org/cassandra", "https://downloads.apache.org/c
 DOWNLOAD_TIMEOUT = 45  # seconds a download may wait for data before the attempt is abandoned
 DOWNLOAD_ATTEMPTS = 3  # attempts per url
 DOWNLOAD_RETRY_DELAY = 5  # seconds, multiplied by the attempt number
+GIT_ATTEMPTS = 5  # attempts for the git commands that reach a remote repository
+GIT_RETRY_DELAY_SEC = 15  # doubled after each attempt, so the attempts span about 4 minutes
+GIT_STALL_BYTES_PER_SEC = 1000  # a git transfer slower than this counts as stalled
+GIT_STALL_TIMEOUT_SEC = 60  # how long a git transfer may stay stalled before the attempt is abandoned
 GIT_REPO = "https://github.com/apache/cassandra.git"
 GITHUB_REPO = "https://github.com/apache/cassandra"
 GITHUB_TAGS = "https://api.github.com/repos/apache/cassandra/git/refs/tags"
 CCM_CONFIG = ConfigParser.RawConfigParser()
 CCM_CONFIG.read(os.path.join(os.path.expanduser("~"), ".ccm", "config"))
+
+# set when a remote git command failed every attempt, cleared when one succeeds; meanwhile each command
+# is tried once, so a remote that stays unreachable does not add minutes to every clone_development
+_git_remote_down = False
 
 
 def setup(version, verbose=False):
@@ -173,20 +181,15 @@ def clone_development(git_repo, version, verbose=False, alias=False):
         # remote fetches we need to perform:
         if not os.path.exists(local_git_cache):
             common.info("Cloning Cassandra...")
-            process = subprocess.Popen(
-                ['git', 'clone', '--bare',
-                 git_repo, local_git_cache],
-                cwd=__get_dir(), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            out, _, _ = log_info(process, logger)
-            assert out == 0, "Could not do a git clone"
+            out, error = __git_remote(['clone', '--bare', git_repo, local_git_cache],
+                                      git_repo, __get_dir(), logger)
+            assert out == 0, "Could not do a git clone: {}".format(error)
         else:
             common.info("Fetching Cassandra updates...")
-            process = subprocess.Popen(
-                ['git', 'fetch', '-fup', 'origin',
-                 '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'],
-                 cwd=local_git_cache, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            out, _, _ = log_info(process, logger)
-            assert out == 0, "Could not update git"
+            out, error = __git_remote(['fetch', '-fup', 'origin',
+                                       '+refs/heads/*:refs/heads/*', '+refs/tags/*:refs/tags/*'],
+                                      git_repo, local_git_cache, logger)
+            assert out == 0, "Could not update git: {}".format(error)
 
         # Checkout the version we want from the local cache:
         if not os.path.exists(target_dir):
@@ -280,6 +283,48 @@ def clone_development(git_repo, version, verbose=False, alias=False):
                    ))
         finally:
             raise e
+
+
+def __git_remote(args, git_repo, cwd, logger):
+    """
+    Run a git command that reaches git_repo, retrying it when git_repo is remote.
+    Returns git's exit code and the errors it printed on the last attempt.
+    """
+    global _git_remote_down
+    remote = __is_remote(git_repo)
+    attempts = GIT_ATTEMPTS if remote and not _git_remote_down else 1
+    # without a low speed limit git waits on a stalled http transfer until the server drops the connection
+    env = {'GIT_HTTP_LOW_SPEED_LIMIT': str(GIT_STALL_BYTES_PER_SEC),
+           'GIT_HTTP_LOW_SPEED_TIME': str(GIT_STALL_TIMEOUT_SEC)}
+    env.update(os.environ)
+    for attempt in range(1, attempts + 1):
+        process = subprocess.Popen(['git'] + args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        out, _, stderr = log_info(process, logger)
+        if out == 0:
+            if remote:
+                _git_remote_down = False
+            return out, None
+        error = __git_errors(stderr)
+        if attempt < attempts:
+            common.warning("git {} {} failed (attempt {} of {}): {}".format(
+                args[0], git_repo, attempt, attempts, error))
+            time.sleep(GIT_RETRY_DELAY_SEC * 2 ** (attempt - 1))
+    if attempts > 1:
+        _git_remote_down = True
+    return out, error
+
+
+def __is_remote(git_repo):
+    # local paths and file:// urls are not retried; scp-like addresses are, e.g. git@github.com:apache/cassandra.git
+    if '://' in git_repo:
+        return not git_repo.startswith('file://')
+    return re.match(r'[\w.-]+@[\w.-]+:', git_repo) is not None
+
+
+def __git_errors(stderr):
+    # git also prints ref updates to stderr, so keep its error lines
+    lines = [line.strip() for line in stderr.decode().splitlines() if line.strip()]
+    return ' | '.join([line for line in lines if line.startswith(('error:', 'fatal:'))] or lines[-3:])
 
 
 def download_version(version, url=None, verbose=False, binary=False):

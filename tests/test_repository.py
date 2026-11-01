@@ -16,13 +16,15 @@
 
 
 import configparser
+import functools
 import io
 import os
 import ssl
+import subprocess
 import tarfile
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from six.moves import urllib
@@ -106,10 +108,67 @@ def untrusted_mirror():
     yield from _serve(_MirrorServer(context))
 
 
+class _GitRemoteHandler(SimpleHTTPRequestHandler):
+    """
+    Serves git repositories over git's dumb http protocol. Every git command starts by requesting info/refs,
+    and that request misbehaves as the next entry of server.misbehave says.
+    """
+
+    def do_GET(self):
+        if '/info/refs' in self.path:
+            self.server.refs_requests += 1
+            behaviour = self.server.misbehave.pop(0) if self.server.misbehave else None
+            if behaviour == 'error':
+                self.send_error(500)
+                return
+            if behaviour == 'stall':
+                self.send_response(200)
+                self.send_header('Content-Length', '1000000')
+                self.end_headers()
+                time.sleep(STALL_SECONDS)
+                return
+        SimpleHTTPRequestHandler.do_GET(self)
+
+    def log_message(self, *args):
+        pass
+
+
+class _GitRemoteServer(ThreadingHTTPServer):
+    block_on_close = False  # do not wait for stalled handlers
+
+    def __init__(self, directory):
+        ThreadingHTTPServer.__init__(self, ('127.0.0.1', 0), functools.partial(_GitRemoteHandler, directory=directory))
+        self.refs_requests = 0
+        self.misbehave = []
+        self.url = 'http://127.0.0.1:{}/cassandra.git'.format(self.server_address[1])
+
+
+def _git(*args):
+    subprocess.check_call(('git',) + args, stdout=subprocess.DEVNULL)
+
+
+@pytest.fixture
+def git_remote(tmp_path, monkeypatch):
+    """A repository with a cassandra-4.0 branch served over http, with ccm's repository directory in tmp_path"""
+    source, served = str(tmp_path / 'source'), str(tmp_path / 'served' / 'cassandra.git')
+    _git('init', '-q', source)
+    _git('-C', source, 'symbolic-ref', 'HEAD', 'refs/heads/cassandra-4.0')
+    _git('-C', source, '-c', 'user.name=ccm', '-c', 'user.email=ccm@example.com', '-c', 'commit.gpgsign=false',
+         'commit', '-q', '--allow-empty', '-m', 'initial')
+    _git('clone', '-q', '--bare', source, served)
+    _git('-C', served, 'update-server-info')
+    monkeypatch.setattr(repository, 'get_default_path', lambda: str(tmp_path))
+    monkeypatch.setattr(repository, 'compile_version', lambda *args: None)
+    yield from _serve(_GitRemoteServer(str(tmp_path / 'served')))
+
+
 @pytest.fixture(autouse=True)
 def fast_retries(monkeypatch):
     monkeypatch.setattr(repository, 'DOWNLOAD_TIMEOUT', 0.5)
     monkeypatch.setattr(repository, 'DOWNLOAD_RETRY_DELAY', 0)
+    monkeypatch.setattr(repository, 'GIT_RETRY_DELAY_SEC', 0)
+    monkeypatch.setattr(repository, 'GIT_STALL_TIMEOUT_SEC', 2)
+    monkeypatch.setattr(repository, '_git_remote_down', False)
 
 
 def _read(path):
@@ -195,3 +254,63 @@ def test_download_version_tries_mirrors_in_order(mirror, tmp_path, monkeypatch):
     installed = tmp_path / 'repository' / '9.9.9'
     assert _read(str(installed / 'bin' / 'cassandra')) == PAYLOAD
     assert _read(str(installed / '0.version.txt')) == b'9.9.9'
+
+
+GITHUB_VERSION = 'github:apache/cassandra-4.0'
+
+
+def test_git_clone_from_remote_is_retried(git_remote):
+    git_remote.misbehave = ['error']
+    repository.clone_development(git_remote.url, GITHUB_VERSION)
+
+    assert git_remote.refs_requests == 2
+    assert os.path.isdir(os.path.join(repository.directory_name(GITHUB_VERSION), '.git'))
+
+
+def test_stalled_git_fetch_is_abandoned_and_retried(git_remote):
+    repository.clone_development(git_remote.url, GITHUB_VERSION)
+    git_remote.misbehave = ['stall']
+    start = time.time()
+    repository.clone_development(git_remote.url, GITHUB_VERSION)
+
+    assert git_remote.refs_requests == 3
+    assert time.time() - start < STALL_SECONDS
+
+
+def test_git_error_is_reported_once_attempts_run_out(git_remote):
+    git_remote.misbehave = ['error'] * repository.GIT_ATTEMPTS
+    with pytest.raises(AssertionError) as e:
+        repository.clone_development(git_remote.url, GITHUB_VERSION)
+
+    assert str(e.value).startswith("Could not do a git clone: fatal: unable to access '{}/'".format(git_remote.url))
+    assert str(e.value).endswith('500')
+    assert git_remote.refs_requests == repository.GIT_ATTEMPTS
+
+
+def test_unreachable_remote_is_tried_once_until_it_works_again(git_remote):
+    git_remote.misbehave = ['error'] * (repository.GIT_ATTEMPTS + 1)
+    with pytest.raises(AssertionError):
+        repository.clone_development(git_remote.url, GITHUB_VERSION)
+    with pytest.raises(AssertionError):
+        repository.clone_development(git_remote.url, GITHUB_VERSION)
+    assert git_remote.refs_requests == repository.GIT_ATTEMPTS + 1
+
+    repository.clone_development(git_remote.url, GITHUB_VERSION)
+    assert git_remote.refs_requests == repository.GIT_ATTEMPTS + 2
+
+    # the remote works again, so its next failure is retried, this time by the fetch into the cache
+    git_remote.misbehave = ['error']
+    repository.clone_development(git_remote.url, GITHUB_VERSION)
+    assert git_remote.refs_requests == repository.GIT_ATTEMPTS + 4
+
+
+def test_local_repository_is_not_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr(repository, 'get_default_path', lambda: str(tmp_path))
+    monkeypatch.setattr(repository, 'GIT_RETRY_DELAY_SEC', 60)
+    missing = str(tmp_path / 'missing')
+    start = time.time()
+    with pytest.raises(AssertionError) as e:
+        repository.clone_development(missing, 'local:{}:trunk'.format(missing))
+
+    assert 'does not exist' in str(e.value)
+    assert time.time() - start < STALL_SECONDS
