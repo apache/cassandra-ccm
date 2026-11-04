@@ -636,11 +636,8 @@ def parse_settings(args, literal_yaml=False):
             settings = dict(settings, **yaml.safe_load(s))
     else:
         for s in args:
-            if is_win():
-                # Allow for absolute path on Windows for value in key/value pair
-                splitted = s.split(':', 1)
-            else:
-                splitted = s.split(':')
+            # Values can contain colons, for example IPv6 addresses or paths.
+            splitted = s.split(':', 1)
             if len(splitted) != 2:
                 raise ArgumentError("A new setting should be of the form 'key: value', got " + s)
             key = splitted[0].strip()

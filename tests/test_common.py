@@ -26,6 +26,19 @@ from . import ccmtest
 
 class TestCommon(ccmtest.Tester):
 
+    @patch('ccmlib.common.is_win', return_value=False)
+    def test_parse_settings_preserves_colons(self, mock_is_win):
+        self.assertEqual(common.parse_settings(['listen_address: ::1']),
+                         {'listen_address': '::1'})
+        self.assertEqual(common.parse_settings(['path: /tmp/archive:old']),
+                         {'path': '/tmp/archive:old'})
+        self.assertEqual(common.parse_settings(['nested.value: one:two']),
+                         {'nested': {'value': 'one:two'}})
+        self.assertEqual(common.parse_settings(['enabled: true', 'port: 9042']),
+                         {'enabled': True, 'port': 9042})
+        with self.assertRaises(common.ArgumentError):
+            common.parse_settings(['missing separator'])
+
     def test_normalize_interface(self):
         normalized = common.normalize_interface(('::1', 9042))
         self.assertEqual(normalized, ('0:0:0:0:0:0:0:1', 9042))
