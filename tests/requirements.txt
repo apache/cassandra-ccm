@@ -15,6 +15,6 @@
 # limitations under the License.
 
 mock==5.1.0
-pytest==8.2.1
+pytest==9.0.3
 requests==2.32.2
 pylint==3.2.2
