@@ -20,10 +20,7 @@
 from platform import system
 from shutil import copyfile
 
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils.core import setup
+from setuptools import setup
 
 ccmscript = 'ccm'
 

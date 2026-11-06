@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ['3.8', '3.11']  # TODO add '3.12' '3.13' '3.14'
+        python-version: ['3.8', '3.11', '3.12', '3.13', '3.14', '3.15']
       fail-fast: false
 
     steps:
@@ -55,7 +55,7 @@ jobs:
 
       - name: Smoke tests
         run: |
-          sudo ./setup.py install
+          ./setup.py install
           set -x
           LATEST_4_0=$(curl -s https://downloads.apache.org/cassandra/ | grep -oE '4\.0\.[0-9]+' | sort -V | tail -1)
           LATEST_4_1=$(curl -s https://downloads.apache.org/cassandra/ | grep -oE '4\.1\.[0-9]+' | sort -V | tail -1)
