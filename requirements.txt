@@ -18,5 +18,11 @@ pyYaml<5.4; python_version < '3'
 pyYaml; python_version >= '3'
 six >=1.4.1
 psutil
-packaging<21
+packaging<21; python_version < '3'
+packaging; python_version >= '3'
 importlib_metadata>=0.23; python_version < '3.8'
+# needed by ./setup.py; venvs no longer bundle setuptools since Python 3.12.
+# The core extra pulls in the packaging version that setuptools needs (setuptools>=71
+# uses the installed packaging instead of its vendored copy).
+setuptools; python_version < '3'
+setuptools[core]; python_version >= '3'

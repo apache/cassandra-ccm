@@ -20,10 +20,8 @@
 from platform import system
 from shutil import copyfile
 
-try:
-    from setuptools import setup
-except ImportError:
-    from distutils.core import setup
+# distutils was removed in Python 3.12, so setuptools is required
+from setuptools import setup
 
 ccmscript = 'ccm'
 

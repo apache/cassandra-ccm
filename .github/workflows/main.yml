@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       matrix:
-        python-version: ['3.8', '3.11']  # TODO add '3.12' '3.13' '3.14'
+        python-version: ['3.8', '3.11', '3.12', '3.13', '3.14', '3.15']
       fail-fast: false
 
     steps:
