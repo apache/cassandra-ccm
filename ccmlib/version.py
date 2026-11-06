@@ -272,9 +272,6 @@ class LooseVersion(object):
     def __eq__(self, other):
         return _sort_key(self._inner) == _sort_key(self._coerce_other(other))
 
-    def __ne__(self, other):
-        return not self == other
-
     def __lt__(self, other):
         return _sort_key(self._inner) < _sort_key(self._coerce_other(other))
 
