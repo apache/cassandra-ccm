@@ -104,7 +104,7 @@ Installation
 ccm uses python setuptools so from the source directory run:
 
     pip install -r requirements.txt
-    sudo ./setup.py install
+    ./setup.py install
 
 ccm is available on the [Python Package Index][pip]:
 
