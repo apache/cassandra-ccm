@@ -101,9 +101,10 @@ Remote Execution only:
 Installation
 ------------
 
-ccm uses python distutils so from the source directory run:
+ccm uses python setuptools so from the source directory run:
 
-    sudo ./setup.py install
+    pip install -r requirements.txt
+    ./setup.py install
 
 ccm is available on the [Python Package Index][pip]:
 
