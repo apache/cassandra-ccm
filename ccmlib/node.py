@@ -1055,19 +1055,21 @@ class Node(object):
             else:
                 time.sleep(.1)
 
-            still_running = self.is_running()
-            if still_running and wait:
-                wait_time_sec = 1
-                for i in xrange(0, 7):
-                    # we'll double the wait time each try and cassandra should
-                    # not take more than 1 minute to shutdown
-                    time.sleep(wait_time_sec)
-                    if not self.is_running():
-                        return True
-                    wait_time_sec = wait_time_sec * 2
-                raise NodeError("Problem stopping node %s" % self.name)
-            else:
-                return True
+            if wait:
+                still_running = self.is_running()
+                if still_running:
+                    wait_time_sec = 1
+                    for i in xrange(0, 7):
+                        # we'll double the wait time each try and cassandra should
+                        # not take more than 1 minute to shutdown
+                        time.sleep(wait_time_sec)
+                        if not self.is_running():
+                            break
+                        wait_time_sec = wait_time_sec * 2
+                    else:
+                        raise NodeError("Problem stopping node %s" % self.name)
+
+            return True
         else:
             # Make sure it is actually stopped even if the PID wasn't found for some reason
             # Always kill because it should already be stopped and we aren't waiting for it to stop
