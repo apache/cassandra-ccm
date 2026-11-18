@@ -27,7 +27,6 @@ import subprocess
 import tarfile
 import tempfile
 from argparse import ArgumentError
-from distutils.version import LooseVersion
 from six.moves import urllib
 
 from ccmlib import common, repository
@@ -35,6 +34,7 @@ from ccmlib.cluster import Cluster
 from ccmlib.common import rmdirs
 from ccmlib.common import ArgumentError
 from ccmlib.dse.dse_node import DseNode
+from ccmlib.version import LooseVersion
 
 try:
     import ConfigParser
